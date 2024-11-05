@@ -541,6 +541,8 @@ class JSGenerator {
             return new TypedInput('runtime.ext_scratch3_control._counter', TYPE_NUMBER);
         case 'control.error':
             return new TypedInput('runtime.ext_scratch3_control._error', TYPE_STRING);
+        case 'control.isclone':
+            return new TypedInput('(!target.isOriginal)', TYPE_BOOLEAN);
         case 'math.polygon':
             let points = JSON.stringify(node.points.map((point, num) => ({x: `x${num}`, y: `y${num}`})));
             for (let num = 0; num < node.points.length; num++) {
@@ -599,8 +601,15 @@ class JSGenerator {
         }
         case 'list.indexOf':
             return new TypedInput(`listIndexOf(${this.referenceVariable(node.list)}, ${this.descendInput(node.item).asUnknown()})`, TYPE_NUMBER);
+        case 'list.amountOf':
+            return new TypedInput(`${this.referenceVariable(node.list)}.value.filter((x) => x == ${this.descendInput(node.value).asUnknown()}).length`, TYPE_NUMBER);
         case 'list.length':
             return new TypedInput(`${this.referenceVariable(node.list)}.value.length`, TYPE_NUMBER);
+
+        case 'list.filteritem':
+            return new TypedInput('runtime.ext_scratch3_data._listFilterItem', TYPE_UNKNOWN);
+        case 'list.filterindex':
+            return new TypedInput('runtime.ext_scratch3_data._listFilterIndex', TYPE_UNKNOWN);
 
         case 'looks.size':
             return new TypedInput('target.size', TYPE_NUMBER);
@@ -988,10 +997,13 @@ class JSGenerator {
                 : node.thread 
                     ? 'thread.variables' 
                     : 'tempVars';
+            const code = this.isOptimized 
+                ? `${hostObj}[${name.asString()}]` 
+                : `get(${hostObj}, ${name.asString()})`; 
             if (environment.supportsNullishCoalescing) {
-                return new TypedInput(`(${hostObj}[${name.asString()}] ?? "")`, TYPE_UNKNOWN);
+                return new TypedInput(`(${code} ?? "")`, TYPE_UNKNOWN);
             }
-            return new TypedInput(`nullish(${hostObj}[${name.asString()}], "")`, TYPE_UNKNOWN);
+            return new TypedInput(`nullish(${code}, "")`, TYPE_UNKNOWN);
         }
         case 'tempVars.exists': {
             const name = this.descendInput(node.var);
@@ -1000,7 +1012,10 @@ class JSGenerator {
                 : node.thread 
                     ? 'thread.variables' 
                     : 'tempVars';
-            return new TypedInput(`${name.asString()} in ${hostObj}`, TYPE_BOOLEAN);
+            const code = this.isOptimized 
+                ? `${name.asString()} in ${hostObj}` 
+                : `includes(${hostObj}, ${name.asString()})`; 
+            return new TypedInput(code, TYPE_BOOLEAN);
         }
         case 'tempVars.all':
             const hostObj = node.runtime 
@@ -1009,9 +1024,11 @@ class JSGenerator {
                     ? 'thread.variables' 
                     : 'tempVars';
             if (node.runtime || node.thread) {
-                return new TypedInput(`Object.keys(${hostObj}).join(',')`);
+                return new TypedInput(`Object.keys(${hostObj}).join(',')`, TYPE_STRING);
             }
             return new TypedInput(`JSON.stringify(Object.keys(tempVars))`, TYPE_STRING);
+        case 'control.dualBlock':
+            return new TypedInput('"dual block works!"', TYPE_STRING);
 
         default:
             log.warn(`JS: Unknown input: ${node.kind}`, node);
@@ -1060,7 +1077,6 @@ class JSGenerator {
             this.source += `yield* executeInCompatibilityLayer(${inputs}, ${blockFunction}, ${this.isWarp}, false, ${blockId});\n`;
             break;
         }
-
         case 'compat': {
             // If the last command in a loop returns a promise, immediately continue to the next iteration.
             // If you don't do this, the loop effectively yields twice per iteration and will run at half-speed.
@@ -1081,6 +1097,7 @@ class JSGenerator {
                     this.source += `}\n`; // close case
                 }
                 this.source += '}\n'; // close switch
+                this.source += `if (${branchVariable}.onEnd[0]) yield ${branchVariable}.onEnd.shift()(${branchVariable});\n`;
                 this.source += `if (!${branchVariable}.isLoop) break;\n`;
                 this.yieldLoop();
                 this.source += '}\n'; // close while
@@ -1093,7 +1110,11 @@ class JSGenerator {
             }
             break;
         }
-
+        case 'procedures.set':
+            const val = this.descendInput(node.val);
+            const i = node.param.index;
+            if (i !== undefined) this.source += `p${i} = ${val.asSafe()};\n`;
+            break;
         case 'control.createClone':
             this.source += `runtime.ext_scratch3_control._createClone(${this.descendInput(node.target).asString()}, target);\n`;
             break;
@@ -1452,6 +1473,16 @@ class JSGenerator {
         case 'list.show':
             this.source += `runtime.monitorBlocks.changeBlock({ id: "${sanitize(node.list.id)}", element: "checkbox", value: true }, runtime);\n`;
             break;
+        
+        case 'list.filter':
+            this.source += `${this.referenceVariable(node.list)}.value = ${this.referenceVariable(node.list)}.value.filter(function (item, index) {`;
+            this.source += `    runtime.ext_scratch3_data._listFilterItem = item;`;
+            this.source += `    runtime.ext_scratch3_data._listFilterIndex = index + 1;`;
+            this.source += `    return ${this.descendInput(node.bool).asBoolean()};`;
+            this.source += `})`;
+            this.source += `runtime.ext_scratch3_data._listFilterItem = "";`;
+            this.source += `runtime.ext_scratch3_data._listFilterIndex = 0;`;
+            break;
 
         case 'looks.backwardLayers':
             if (!this.target.isStage) {
@@ -1743,18 +1774,9 @@ class JSGenerator {
                 : node.thread 
                     ? 'thread.variables' 
                     : 'tempVars';
-            this.source += `${hostObj}[${name.asString()}] = ${val.asUnknown()};`;
-            break;
-        }
-        case 'tempVars.change': {
-            const name = this.descendInput(node.var);
-            const val = this.descendInput(node.val);
-            const hostObj = node.runtime 
-                ? 'runtime.variables' 
-                : node.thread 
-                    ? 'thread.variables' 
-                    : 'tempVars';
-            this.source += `${hostObj}[${name.asString()}] += ${val.asUnknown()};`;
+            this.source += this.isOptimized  
+                ? `${hostObj}[${name.asString()}] = ${val.asUnknown()};` 
+                : `set(${hostObj}, ${name.asString()}, ${val.asUnknown()});`; 
             break;
         }
         case 'tempVars.delete': {
@@ -1764,7 +1786,9 @@ class JSGenerator {
                 : node.thread 
                     ? 'thread.variables' 
                     : 'tempVars';
-            this.source += `delete ${hostObj}[${name.asString()}];`;
+            this.source += this.isOptimized  
+                ? `delete ${hostObj}[${name.asString()}];` 
+                : `remove(${hostObj}, ${name.asString()});`;  
             break;
         }
         case 'tempVars.deleteAll': {
@@ -1784,7 +1808,13 @@ class JSGenerator {
                 : node.thread 
                     ? 'thread.variables' 
                     : 'tempVars';
-            const index = `${hostObj}[${name.asString()}]`;
+            const rootVar = this.localVariables.next(); 
+            const keyVar = this.localVariables.next(); 
+            const index = this.isOptimized  
+                ? `${hostObj}[${name.asString()}]` 
+                : `${rootVar}[${keyVar}]`; 
+            if (!this.isOptimized)  
+                this.source += `const [${rootVar},${keyVar}] = _resolveKeyPath(${hostObj}, ${name.asString()}); `; 
             this.source += `${index} = 0; `;
             this.source += `while (${index} < ${loops.asNumber()}) { `;
             this.source += `${index}++;\n`;
@@ -1793,6 +1823,9 @@ class JSGenerator {
             this.source += '}\n';
             break;
         }
+        case 'control.dualBlock':
+            this.source += `console.log("dual block works");`
+            break
 
         default:
             log.warn(`JS: Unknown stacked block: ${node.kind}`, node);

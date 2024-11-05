@@ -1,6 +1,8 @@
 const Cast = require('../util/cast');
 const StringUtil = require('../util/string-util');
 const BlockType = require('../extension-support/block-type');
+const Sequencer = require('../engine/sequencer');
+const BlockUtility = require('../engine/block-utility');
 const Variable = require('../engine/variable');
 const Color = require('../util/color');
 const log = require('../util/log');
@@ -69,6 +71,8 @@ class ScriptTreeGenerator {
         this.runtime = this.target.runtime;
         /** @private */
         this.stage = this.runtime.getTargetForStage();
+        /** @private */
+        this.util = new BlockUtility(this.runtime.sequencer, this.thread);
 
         /**
          * This script's intermediate representation.
@@ -278,6 +282,10 @@ class ScriptTreeGenerator {
             return {
                 kind: 'control.error'
             };
+        case 'control_is_clone':
+            return {
+                kind: 'control.isclone'
+            };
 
         case 'data_variable':
             return {
@@ -301,16 +309,30 @@ class ScriptTreeGenerator {
                 list: this.descendVariable(block, 'LIST', LIST_TYPE),
                 item: this.descendInputOfBlock(block, 'ITEM')
             };
-        case 'data_itemnumoflist':
-            return {
-                kind: 'list.indexOf',
-                list: this.descendVariable(block, 'LIST', LIST_TYPE),
-                item: this.descendInputOfBlock(block, 'ITEM')
-            };
+            case 'data_itemnumoflist':
+                return {
+                    kind: 'list.indexOf',
+                    list: this.descendVariable(block, 'LIST', LIST_TYPE),
+                    item: this.descendInputOfBlock(block, 'ITEM')
+                };
+            case 'data_amountinlist':
+                return {
+                    kind: 'list.amountOf',
+                    list: this.descendVariable(block, 'LIST', LIST_TYPE),
+                    value: this.descendInputOfBlock(block, 'VALUE')
+                };
         case 'data_listcontents':
             return {
                 kind: 'list.contents',
                 list: this.descendVariable(block, 'LIST', LIST_TYPE)
+            };
+        case 'data_filterlistitem':
+            return {
+                kind: 'list.filteritem'
+            };
+        case 'data_filterlistindex':
+            return {
+                kind: 'list.filterindex'
             };
 
         case 'event_broadcast_menu': {
@@ -898,6 +920,11 @@ class ScriptTreeGenerator {
                 kind: 'tw.lastKeyPressed'
             };
 
+        case 'control_dualblock':
+            return {
+                kind: 'control.dualBlock'
+            };
+
         default: {
             const opcodeFunction = this.runtime.getOpcodeFunction(block.opcode);
             if (opcodeFunction) {
@@ -1293,6 +1320,12 @@ class ScriptTreeGenerator {
                 kind: 'var.show',
                 variable: this.descendVariable(block, 'VARIABLE', SCALAR_TYPE)
             };
+        case 'data_filterlist':
+            return {
+                kind: 'list.filter',
+                list: this.descendVariable(block, 'LIST', LIST_TYPE),
+                bool: this.descendInputOfBlock(block, 'BOOL')
+            };
 
         case 'event_broadcast':
             return {
@@ -1548,6 +1581,12 @@ class ScriptTreeGenerator {
             return {
                 kind: 'procedures.return',
                 return: this.descendInputOfBlock(block, 'return')
+            };
+        case 'procedures_set': 
+            return {
+                kind: 'procedures.set',
+                param: this.descendInputOfBlock(block, "PARAM"),
+                val: this.descendInputOfBlock(block, "VALUE")
             };
         case 'procedures_call': {
             // setting of yields will be handled later in the analysis phase
@@ -1902,7 +1941,7 @@ class ScriptTreeGenerator {
                 var: this.descendInputOfBlock(block, 'name')
             };
 
-        case 'lmsTempVars2_deleteAllRuntimeVariable':
+        case 'lmsTempVars2_deleteAllRuntimeVariables':
             return {
                 kind: 'tempVars.deleteAll',
                 runtime: true
@@ -1927,6 +1966,10 @@ class ScriptTreeGenerator {
                 var: this.descendInputOfBlock(block, 'NAME'),
                 loops: this.descendInputOfBlock(block, 'REPEAT'),
                 do: this.descendSubstack(block, 'SUBSTACK')
+            };
+        case 'control_dualblock':
+            return {
+                kind: 'control.dualBlock'
             };
 
         default: {

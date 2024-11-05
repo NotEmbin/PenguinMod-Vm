@@ -75,7 +75,8 @@ const statementBlocks = [
     'sound_set_stop_fadeout_to',
     'sound_play_at_seconds',
     'sound_play_at_seconds_until_done',
-    'sound_pauseallsounds'
+    'sound_pauseallsounds',
+    'argument_reporter_command'
 ];
 
 const outputBlocks = [
@@ -128,6 +129,7 @@ const outputBlocks = [
     "sensing_thing_has_text",
     "sensing_thing_has_number",
     "sensing_objecttouchingobject",
+    "sensing_objecttouchingclonesprite",
     'looks_getOtherSpriteVisible',
     'operator_gtorequal',
     'operator_ltorequal',

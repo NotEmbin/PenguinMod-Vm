@@ -24,6 +24,7 @@ const { validateJSON } = require('../util/json-block-utilities');
 const Color = require('../util/color');
 const TabManager = require('../extension-support/pm-tab-manager');
 const ModalManager = require('../extension-support/pm-modal-manager');
+const MathUtil = require('../util/math-util');
 
 // Virtual I/O devices.
 const Clock = require('../io/clock');
@@ -492,7 +493,8 @@ class Runtime extends EventEmitter {
             maxClones: Runtime.MAX_CLONES,
             miscLimits: true,
             fencing: true,
-            dangerousOptimizations: false
+            dangerousOptimizations: false,
+            disableOffscreenRendering: false
         };
 
         this.compilerOptions = {
@@ -2205,6 +2207,7 @@ class Runtime extends EventEmitter {
         this.renderer = renderer;
         this.renderer.setLayerGroupOrdering(StageLayering.LAYER_GROUPS);
         this.renderer.offscreenTouching = !this.runtimeOptions.fencing;
+        this.renderer.renderOffscreen = this.runtimeOptions.disableOffscreenRendering;
         this.updatePrivacy();
     }
 
@@ -3050,6 +3053,10 @@ class Runtime extends EventEmitter {
         this.emit(Runtime.RUNTIME_OPTIONS_CHANGED, this.runtimeOptions);
         if (this.renderer) {
             this.renderer.offscreenTouching = !this.runtimeOptions.fencing;
+            // if these miss match then update (do full rerender as the state drastically changes output)
+            if (this.runtimeOptions.disableOffscreenRendering === this.renderer.renderOffscreen) {
+                this.renderer.setRenderOffscreen(!this.runtimeOptions.disableOffscreenRendering);
+            }
         }
     }
 
@@ -3644,6 +3651,22 @@ class Runtime extends EventEmitter {
     }
 
     /**
+     * Get the branch for a particular C-shaped block, and it's target.
+     * @param {?string} id ID for block to get the branch for.
+     * @param {?string} branchId Which branch to select (e.g. for if-else).
+     * @return {?string} ID of block in the branch.
+     */
+    getBranchAndTarget (id, branchId) {
+        for (const target of this.targets) {
+            const result = target.blocks.getBranch(id, branchId);
+            if (result) {
+                return [result, target];
+            }
+        }
+        return null;
+    }
+
+    /**
      * gets a screen, if no screen can be found it will create one
      * @param {string} screen the screen to get
      * @returns {Object} the screen state object
@@ -3666,11 +3689,17 @@ class Runtime extends EventEmitter {
      * @param {boolean} silent if we should emit an event because of this change
      */
     updateCamera(screen, state, silent) {
-        if (!this.cameraStates[screen]) {
-            this.cameraStates[screen] = screen;
-        }
-        Object.assign(this.cameraStates[screen], state);
-        if (!silent) this.emit(Runtime.CAMERA_CHANGED, screen);
+        if (state.dir) state.dir = MathUtil.wrapClamp(state.dir, -179, 180);
+        this.cameraStates[screen] = state = 
+            Object.assign(this.cameraStates[screen] ?? {}, state);
+        if (!silent ?? state.silent) this.emitCameraChanged(screen);
+    }
+    emitCameraChanged(screen) {
+        for (let i = 0; i < this.targets.length; i++) 
+            if (this.targets[i].cameraBound === screen)
+                this.targets[i].cameraUpdateEvent();
+        this.emit(Runtime.CAMERA_CHANGED, screen);
+        this.requestRedraw();
     }
 
     /**

@@ -174,7 +174,7 @@ const executeInCompatibilityLayer = function*(inputs, blockFunction, isWarp, use
     thread.stackFrames[thread.stackFrames.length - 1].reuse(isWarp);
 
     const executeBlock = () => {
-        blockUtility.init(thread, blockId, stackFrame);
+        blockUtility.init(thread, blockId, stackFrame, branchInfo);
         return blockFunction(inputs, blockUtility, visualReport);
     };
 
@@ -228,7 +228,8 @@ runtimeFunctions.createBranchInfo = `const createBranchInfo = (isLoop) => ({
     defaultIsLoop: isLoop,
     isLoop: false,
     branch: 0,
-    stackFrame: {}
+    stackFrame: {},
+    onEnd: [],
 });`;
 
 /**
@@ -611,6 +612,49 @@ runtimeFunctions.parseJSONSafe = `const parseJSONSafe = json => {
     catch return {}
 }`;
 
+runtimeFunctions._resolveKeyPath = `const _resolveKeyPath = (obj, keyPath) => {
+    const path = keyPath.matchAll(/(\\.|^)(?<key>[^.[]+)|\\[(?<litkey>(\\\\\\]|\\\\|[^]])+)\\]/g);
+    let top = obj;
+    let pre;
+    let tok;
+    let key;
+    while (!(tok = path.next()).done) {
+        key = tok.value.groups.key ?? tok.value.groups.litKey.replaceAll('\\\\\\\\', '\\\\').replaceAll('\\\\]', ']');
+        pre = top;
+        top = top?.get?.(key) ?? top?.[key];
+        if (top === undefined) return [obj, keyPath];
+    }
+    return [pre, key];
+}`;
+
+runtimeFunctions.get = `const get = (obj, keyPath) => {
+    const [root, key] = _resolveKeyPath(obj, keyPath);
+    return typeof root === 'undefined' 
+        ? '' 
+        : root.get?.(key) ?? root[key];
+}`;
+
+runtimeFunctions.set = `const set = (obj, keyPath, val) => {
+    const [root, key] = _resolveKeyPath(obj, keyPath);
+    return typeof root === 'undefined' 
+        ? '' 
+        : root.set?.(key) ?? (root[key] = val);
+}`;
+
+runtimeFunctions.remove = `const remove = (obj, keyPath) => {
+    const [root, key] = _resolveKeyPath(obj, keyPath);
+    return typeof root === 'undefined' 
+        ? '' 
+        : root.delete?.(key) ?? root.remove?.(key) ?? (delete root[key]);
+}`;
+
+runtimeFunctions.includes = `const includes = (obj, keyPath) => {
+    const [root, key] = _resolveKeyPath(obj, keyPath);
+    return typeof root === 'undefined' 
+        ? '' 
+        : root.has?.(key) ?? (key in root);
+}`;
+
 /**
  * Step a compiled thread.
  * @param {Thread} thread The thread to step.
@@ -637,6 +681,9 @@ const insertRuntime = source => {
     }
     if (result.includes('executeInCompatibilityLayer') && !result.includes('const waitPromise')) {
         result = result.replace('let hasResumedFromPromise = false;', `let hasResumedFromPromise = false;\n${runtimeFunctions.waitPromise}`);
+    }
+    if (result.includes('_resolveKeyPath') && !result.includes('const _resolveKeyPath')) {
+        result = runtimeFunctions._resolveKeyPath + ';' + result;
     }
     result += `return ${source}`;
     return result;
